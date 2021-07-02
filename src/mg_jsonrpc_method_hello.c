@@ -9,6 +9,6 @@ static void method_cb(struct jsonrpc_request *req) {
 #define METHOD "hello"
 struct jsonrpc_method mgj_hello = {
     .method = METHOD,
-    .method_sz = strlen(METHOD),
+    .method_sz = sizeof(METHOD) - 1,
     .cb = method_cb,
 };
