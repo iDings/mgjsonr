@@ -26,8 +26,6 @@ int main(int argc, char **argv) {
 	signal(SIGTERM, sigcatch);
 
     mg_jsonrpc_t *mgj = mg_jsonrpc_new(s_listen_on);
-    assert(mgj != NULL);
-
     mg_jsonrpc_start(mgj, true);
 
     while (running) {
