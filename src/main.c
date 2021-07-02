@@ -6,8 +6,8 @@
 #include <assert.h>
 
 #include "mg_jsonrpc.h"
+#include "mg_jsonrpc_methods.h"
 
-static const char *s_listen_on = "http://localhost:8000";
 static bool running = true;
 
 static void sigcatch(int signum) {
@@ -25,7 +25,14 @@ int main(int argc, char **argv) {
 	signal(SIGINT, sigcatch);
 	signal(SIGTERM, sigcatch);
 
-    mg_jsonrpc_t *mgj = mg_jsonrpc_new(s_listen_on);
+    const char *url = "ws://localhost:8000";
+    if (argc >= 2)
+        url = argv[1];
+
+    mg_jsonrpc_t *mgj = mg_jsonrpc_new(url);
+    assert(mgj != NULL);
+
+    mg_jsonrpc_init(mgj, g_mgj_methods);
     mg_jsonrpc_start(mgj, true);
 
     while (running) {
@@ -33,6 +40,5 @@ int main(int argc, char **argv) {
     }
 
     mg_jsonrpc_unref(mgj);
-    mgj = NULL;
     return 0;
 }

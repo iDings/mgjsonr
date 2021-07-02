@@ -3,12 +3,13 @@
 #include <inttypes.h>
 #include <stdbool.h>
 
-#include "mg_jsonrpc.h"
 #include "mongoose.h"
+#include "mg_jsonrpc.h"
 
 struct mg_jsonrpc {
     int ref_count;
     struct mg_mgr mgr;
+    struct jsonrpc_ctx jctx;
 
     char *ws_url;
     bool running;
@@ -71,13 +72,42 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
             // Websocket connection, which will receive MG_EV_WS_MSG events.
             mg_ws_upgrade(c, hm, NULL);
         } else {
+            mg_http_reply(c, 404, "", "Invalid URI [%.*s]\n", (int)hm->uri.len, hm->uri.ptr);
         }
     } else if (ev == MG_EV_WS_MSG) {
         // Got websocket frame. Received data is wm->data. Echo it back!
         struct mg_ws_message *wm = (struct mg_ws_message *) ev_data;
-        mg_ws_send(c, wm->data.ptr, wm->data.len, WEBSOCKET_OP_TEXT);
+        //mg_ws_send(c, wm->data.ptr, wm->data.len, WEBSOCKET_OP_TEXT);
+        LOG(LL_DEBUG, ("request: %.*s", (int)wm->data.len - 1, wm->data.ptr));
+        char *reply = NULL;
+        jsonrpc_ctx_process(&mgj->jctx, wm->data.ptr, wm->data.len, mjson_print_dynamic_buf, &reply, mgj);
+        LOG(LL_DEBUG, ("reply: %s", reply));
+        mg_ws_send(c, reply, strlen(reply), WEBSOCKET_OP_TEXT);
+
+        free(reply); reply = NULL;
         mg_iobuf_delete(&c->recv, c->recv.len);
     }
+}
+
+static int jsonrpc_response_cb(const char *buf, int len, void *userdata) {
+    LOG(LL_INFO, ("jsonrpc response:%.*s", len, buf));
+    return 0;
+}
+
+int mg_jsonrpc_init(mg_jsonrpc_t *mgj, struct jsonrpc_method *methods[]) {
+    if (mgj == NULL) return -EINVAL;
+    
+    jsonrpc_ctx_init(&mgj->jctx, jsonrpc_response_cb, mgj);
+    for (int i = 0; methods[i]; i++) {
+        methods[i]->next = mgj->jctx.methods;
+        mgj->jctx.methods = methods[i];
+    }
+    return 0;
+}
+
+int mg_jsonrpc_deinit(mg_jsonrpc_t *mgj) {
+    if (mgj == NULL) return -EINVAL;
+    return 0;
 }
 
 mg_jsonrpc_t *mg_jsonrpc_new(const char *url) {
@@ -99,8 +129,8 @@ mg_jsonrpc_t *mg_jsonrpc_new(const char *url) {
 
     pthread_cond_init(&mgj->mg_thread.cond, NULL);
     pthread_mutex_init(&mgj->mg_thread.lock, NULL);
-    mgj->ref_count = 1;
 
+    mgj->ref_count = 1;
     return mgj;
 }
 
@@ -141,8 +171,8 @@ static void *mg_thread(void *udata) {
     mg_log_set("3");
     mg_mgr_init(&mgj->mgr);
     mg_http_listen(&mgj->mgr, mgj->ws_url, fn, mgj);
-    pthread_cond_broadcast(&mgj->mg_thread.cond);
 
+    pthread_cond_broadcast(&mgj->mg_thread.cond);
     while (mgj->running)
         mg_mgr_poll(&mgj->mgr, 500);
 
