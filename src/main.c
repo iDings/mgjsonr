@@ -25,14 +25,14 @@ int main(int argc, char **argv) {
 	signal(SIGINT, sigcatch);
 	signal(SIGTERM, sigcatch);
 
-    const char *url = "ws://localhost:8000";
+    const char *url = "ws://0.0.0.0:9898";
     if (argc >= 2)
         url = argv[1];
 
     mg_jsonrpc_t *mgj = mg_jsonrpc_new(url);
     assert(mgj != NULL);
 
-    mg_jsonrpc_init(mgj, g_mgj_methods);
+    mg_jsonrpc_init(mgj, mg_jsonrpc_methods());
     mg_jsonrpc_start(mgj, true);
 
     while (running) {

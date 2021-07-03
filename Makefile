@@ -13,6 +13,7 @@ INC_FLAGS := $(addprefix -I,$(INC_DIRS))
 CPPFLAGS ?= $(INC_FLAGS) -fsanitize=address -MMD -MP
 
 CFLAGS ?= -fsanitize=address -fsanitize-recover=address
+CFLAGS += -DMJSON_ENABLE_NEXT=1
 LDFLAGS ?= -fsanitize=address -lrt -lpthread
 
 $(BUILD_DIR)/$(TARGET_EXEC): $(OBJS)

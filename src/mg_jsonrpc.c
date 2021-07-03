@@ -3,8 +3,8 @@
 #include <inttypes.h>
 #include <stdbool.h>
 
-#include "mongoose.h"
 #include "mg_jsonrpc.h"
+#include "mg_log.h"
 
 struct mg_jsonrpc {
     int ref_count;
@@ -19,6 +19,8 @@ struct mg_jsonrpc {
         pthread_mutex_t lock;
     } mg_thread;
 };
+
+static const char *s_web_directory = ".";
 
 static const char *ev2str(int ev) {
     if (ev == MG_EV_ERROR)
@@ -64,44 +66,65 @@ static const char *ev2str(int ev) {
 static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
     mg_jsonrpc_t *mgj = (mg_jsonrpc_t *)fn_data;
 
-    LOG(LL_VERBOSE_DEBUG, ("receive ev: %s", ev2str(ev)));
+    //LOGE("receive ev: %s", ev2str(ev));
     if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = (struct mg_http_message *) ev_data;
         if (mg_http_match_uri(hm, "/ws/jsonrpc")) {
             // Upgrade to websocket. From now on, a connection is a full-duplex
             // Websocket connection, which will receive MG_EV_WS_MSG events.
             mg_ws_upgrade(c, hm, NULL);
+        }  else if (mg_http_match_uri(hm, "/http/jsonrpc")) {
+            // Serve REST response
+            LOGI("body:%.*s", hm->body.len, hm->body.ptr);
+            char *reply = NULL;
+            jsonrpc_ctx_process(&mgj->jctx, hm->body.ptr, hm->body.len, mjson_print_dynamic_buf, &reply, mgj);
+            if (!reply) {
+                mjson_printf(mjson_print_dynamic_buf, &reply,
+                        "{\"error\":{\"code\":-32603,\"message\":%.*Q}}\n", hm->body.len, hm->body.ptr);
+            }
+
+            if (reply) {
+                mg_http_reply(c, 200, "", "%s", reply);
+                mg_ws_send(c, reply, strlen(reply), WEBSOCKET_OP_TEXT);
+                free(reply);
+                reply = NULL;
+            }
         } else {
-            mg_http_reply(c, 404, "", "Invalid URI [%.*s]\n", (int)hm->uri.len, hm->uri.ptr);
+            // Serve static files
+            struct mg_http_serve_opts opts = {.root_dir = s_web_directory};
+            mg_http_serve_dir(c, ev_data, &opts);
         }
     } else if (ev == MG_EV_WS_MSG) {
         // Got websocket frame. Received data is wm->data. Echo it back!
         struct mg_ws_message *wm = (struct mg_ws_message *) ev_data;
         //mg_ws_send(c, wm->data.ptr, wm->data.len, WEBSOCKET_OP_TEXT);
-        LOG(LL_DEBUG, ("request: %.*s", (int)wm->data.len - 1, wm->data.ptr));
+        LOGD("request: %.*s", (int)wm->data.len - 1, wm->data.ptr);
         char *reply = NULL;
         jsonrpc_ctx_process(&mgj->jctx, wm->data.ptr, wm->data.len, mjson_print_dynamic_buf, &reply, mgj);
-        LOG(LL_DEBUG, ("reply: %s", reply));
-        mg_ws_send(c, reply, strlen(reply), WEBSOCKET_OP_TEXT);
+        if (!reply) {
+            mjson_printf(mjson_print_dynamic_buf, &reply,
+                    "{\"error\":{\"code\":-32603,\"message\":%.*Q}}\n", wm->data.len, wm->data.ptr);
+        }
 
-        free(reply); reply = NULL;
+        if (reply) {
+            mg_ws_send(c, reply, strlen(reply), WEBSOCKET_OP_TEXT);
+            free(reply);
+            reply = NULL;
+        }
         mg_iobuf_delete(&c->recv, c->recv.len);
     }
 }
 
 static int jsonrpc_response_cb(const char *buf, int len, void *userdata) {
-    LOG(LL_INFO, ("jsonrpc response:%.*s", len, buf));
+    LOGI("jsonrpc response:%.*s", len, buf);
     return 0;
 }
 
-int mg_jsonrpc_init(mg_jsonrpc_t *mgj, struct jsonrpc_method *methods[]) {
+int mg_jsonrpc_init(mg_jsonrpc_t *mgj, struct jsonrpc_method *methods) {
     if (mgj == NULL) return -EINVAL;
     
     jsonrpc_ctx_init(&mgj->jctx, jsonrpc_response_cb, mgj);
-    for (int i = 0; methods[i]; i++) {
-        methods[i]->next = mgj->jctx.methods;
-        mgj->jctx.methods = methods[i];
-    }
+    mgj->jctx.methods = methods;
     return 0;
 }
 
@@ -115,13 +138,13 @@ mg_jsonrpc_t *mg_jsonrpc_new(const char *url) {
 
     mg_jsonrpc_t *mgj = calloc(1, sizeof(mg_jsonrpc_t));
     if (mgj == NULL) {
-        LOG(LL_ERROR, ("calloc %zu fail", sizeof(mg_jsonrpc_t)));
+        LOGE("calloc %zu fail", sizeof(mg_jsonrpc_t));
         return NULL;
     }
 
     mgj->ws_url = strdup(url);
     if (mgj->ws_url == NULL) {
-        LOG(LL_ERROR, ("strdup %s fail", url));
+        LOGE("strdup %s fail", url);
         free(mgj);
         mgj = NULL;
         return NULL;
@@ -176,7 +199,7 @@ static void *mg_thread(void *udata) {
     while (mgj->running)
         mg_mgr_poll(&mgj->mgr, 500);
 
-    LOG(LL_INFO, ("mg thread exiting"));
+    LOGI("mg thread exiting");
     mg_mgr_free(&mgj->mgr);
     return NULL;
 }
@@ -188,7 +211,7 @@ int mg_jsonrpc_start(mg_jsonrpc_t *mgj, bool sync) {
     mgj->running = true;
     int ret = pthread_create(&mgj->mg_thread.thread, NULL, mg_thread, mgj);
     if (ret != 0) {
-        LOG(LL_ERROR, ("pthread_create fail:%s", strerror(ret)));
+        LOGE("pthread_create fail:%s", strerror(ret));
         mgj->running = false;
         return ret;
     }
