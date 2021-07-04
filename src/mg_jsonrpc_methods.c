@@ -19,8 +19,8 @@ static bool rpc_list_filter(const char *method, const char *params, int params_l
             break;
         }
 
-        LOGV("method: %s", method);
-        LOGV("key: %.*s, value: %.*s vtype:%d", klen, params + koff, vlen, params + voff, vtype);
+        LOGD("method: %s\n", method);
+        LOGD("key: %.*s, value: %.*s vtype:%d\n", klen, params + koff, vlen, params + voff, vtype);
         if (vtype != MJSON_TOK_STRING)
             continue;
 
@@ -42,7 +42,7 @@ static int jsonrpc_print_methods(mjson_print_fn_t fn, void *fndata, va_list *ap)
 
     struct jsonrpc_method *m;
     int len = 0;
-    LOGV("params:%.*s params_len:%d", params_len, params, params_len);
+    LOGD("params:%.*s params_len:%d\n", params_len, params, params_len);
     for (m = ctx->methods; m != NULL; m = m->next) {
         bool match = rpc_list_filter(m->method, params, params_len);
         if (match) {

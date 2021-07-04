@@ -6,6 +6,13 @@
 #include "mg_jsonrpc.h"
 #include "mg_log.h"
 
+typedef struct notification notification_t;
+
+struct notification {
+    struct notification *next;
+    char *message;
+};
+
 struct mg_jsonrpc {
     int ref_count;
     struct mg_mgr mgr;
@@ -18,9 +25,15 @@ struct mg_jsonrpc {
         pthread_cond_t cond;
         pthread_mutex_t lock;
     } mg_thread;
+
+    pthread_mutex_t noti_lock;
+    notification_t *noti;
 };
 
 static const char *s_web_directory = ".";
+
+static notification_t *notification_new(const char *methold, const char *params);
+static void notification_free(notification_t **notip);
 
 static const char *ev2str(int ev) {
     if (ev == MG_EV_ERROR)
@@ -63,10 +76,20 @@ static const char *ev2str(int ev) {
     return "mg_ev_unkown";
 }
 
+static void ws_broadcast(struct mg_connection *conns, const char *buf, size_t len) {
+    struct mg_connection *c;
+    for (c = conns; c != NULL; c = c->next) {
+        // Send only to accepted websocket connections
+        if (c->is_accepted && c->is_websocket) {
+            mg_ws_send(c, buf, len, WEBSOCKET_OP_TEXT);
+        }
+    }
+}
+
 static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
     mg_jsonrpc_t *mgj = (mg_jsonrpc_t *)fn_data;
 
-    //LOGE("receive ev: %s", ev2str(ev));
+    LOGV("receive ev: %s\n", ev2str(ev));
     if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = (struct mg_http_message *) ev_data;
         if (mg_http_match_uri(hm, "/ws/jsonrpc")) {
@@ -75,7 +98,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
             mg_ws_upgrade(c, hm, NULL);
         }  else if (mg_http_match_uri(hm, "/http/jsonrpc")) {
             // Serve REST response
-            LOGI("body:%.*s", hm->body.len, hm->body.ptr);
+            LOGI("body:%.*s\n", hm->body.len, hm->body.ptr);
             char *reply = NULL;
             jsonrpc_ctx_process(&mgj->jctx, hm->body.ptr, hm->body.len, mjson_print_dynamic_buf, &reply, mgj);
             if (!reply) {
@@ -98,7 +121,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
         // Got websocket frame. Received data is wm->data. Echo it back!
         struct mg_ws_message *wm = (struct mg_ws_message *) ev_data;
         //mg_ws_send(c, wm->data.ptr, wm->data.len, WEBSOCKET_OP_TEXT);
-        LOGD("request: %.*s", (int)wm->data.len - 1, wm->data.ptr);
+        LOGI("request: %.*s\n", (int)wm->data.len - 1, wm->data.ptr);
         char *reply = NULL;
         jsonrpc_ctx_process(&mgj->jctx, wm->data.ptr, wm->data.len, mjson_print_dynamic_buf, &reply, mgj);
         if (!reply) {
@@ -112,6 +135,23 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
             reply = NULL;
         }
         mg_iobuf_delete(&c->recv, c->recv.len);
+    } else if (ev == MG_EV_POLL) {
+        pthread_mutex_lock(&mgj->noti_lock);
+        do {
+            notification_t *noti = mgj->noti;
+            if (noti == NULL)
+                break;
+            mgj->noti = noti->next;
+            pthread_mutex_unlock(&mgj->noti_lock);
+
+            if (noti->message) {
+                ws_broadcast(mgj->mgr.conns, noti->message, strlen(noti->message));
+            }
+            notification_free(&noti);
+
+            pthread_mutex_lock(&mgj->noti_lock);
+        } while (1);
+        pthread_mutex_unlock(&mgj->noti_lock);
     }
 }
 
@@ -138,13 +178,13 @@ mg_jsonrpc_t *mg_jsonrpc_new(const char *url) {
 
     mg_jsonrpc_t *mgj = calloc(1, sizeof(mg_jsonrpc_t));
     if (mgj == NULL) {
-        LOGE("calloc %zu fail", sizeof(mg_jsonrpc_t));
+        LOGE("calloc %zu fail\n", sizeof(mg_jsonrpc_t));
         return NULL;
     }
 
     mgj->ws_url = strdup(url);
     if (mgj->ws_url == NULL) {
-        LOGE("strdup %s fail", url);
+        LOGE("strdup %s fail\n", url);
         free(mgj);
         mgj = NULL;
         return NULL;
@@ -152,6 +192,7 @@ mg_jsonrpc_t *mg_jsonrpc_new(const char *url) {
 
     pthread_cond_init(&mgj->mg_thread.cond, NULL);
     pthread_mutex_init(&mgj->mg_thread.lock, NULL);
+    pthread_mutex_init(&mgj->noti_lock, NULL);
 
     mgj->ref_count = 1;
     return mgj;
@@ -164,6 +205,14 @@ static void mg_jsonrpc_freep(mg_jsonrpc_t **mgjp) {
 
         mg_jsonrpc_stop(mgj);
 
+        notification_t *noti = mgj->noti;
+        while ((noti)) {
+            notification_t *next = noti->next;
+            notification_free(&noti);
+            noti = next;
+        }
+
+        pthread_mutex_destroy(&mgj->noti_lock);
         pthread_mutex_destroy(&mgj->mg_thread.lock);
         pthread_cond_destroy(&mgj->mg_thread.cond);
         if (mgj->ws_url)
@@ -197,9 +246,9 @@ static void *mg_thread(void *udata) {
 
     pthread_cond_broadcast(&mgj->mg_thread.cond);
     while (mgj->running)
-        mg_mgr_poll(&mgj->mgr, 500);
+        mg_mgr_poll(&mgj->mgr, 200);
 
-    LOGI("mg thread exiting");
+    LOGI("mg thread exiting\n");
     mg_mgr_free(&mgj->mgr);
     return NULL;
 }
@@ -211,7 +260,7 @@ int mg_jsonrpc_start(mg_jsonrpc_t *mgj, bool sync) {
     mgj->running = true;
     int ret = pthread_create(&mgj->mg_thread.thread, NULL, mg_thread, mgj);
     if (ret != 0) {
-        LOGE("pthread_create fail:%s", strerror(ret));
+        LOGI("pthread_create fail:%s\n", strerror(ret));
         mgj->running = false;
         return ret;
     }
@@ -228,4 +277,54 @@ int mg_jsonrpc_stop(mg_jsonrpc_t *mgj) {
     mgj->running = false;
     pthread_join(mgj->mg_thread.thread, NULL);
     return 0;
+}
+
+static notification_t *notification_new(const char *m, const char *params) {
+    notification_t *noti = calloc(1, sizeof(*noti));
+    if (noti == NULL)
+        return NULL;
+    
+    mjson_print_fn_t fn = mjson_print_dynamic_buf;
+    char *fnd = NULL;
+    mjson_printf(fn, &fnd, "{%Q:%Q", "method", m);
+    if (params) {
+        mjson_printf(fn, &fnd, ", %Q:%s", "params", params);
+    }
+    mjson_printf(fn, &fnd, "}}\n");
+
+    noti->message = fnd;
+    return noti;
+}
+
+static void notification_free(notification_t **notip) {
+    if (notip && *notip) {
+        notification_t *noti = *notip;
+        *notip = NULL;
+
+        if (noti->message)
+            free(noti->message);
+        free(noti);
+    }
+}
+
+void mg_jsonrpc_send_notification(mg_jsonrpc_t *mgj, const char *method, const char *params) {
+    if (mgj == NULL) return;
+    if (method == NULL) return;
+
+    notification_t *noti = notification_new(method, params);
+    if (noti == NULL) {
+        return;
+    }
+
+    pthread_mutex_lock(&mgj->noti_lock);
+    notification_t *item = mgj->noti;
+    notification_t *p = item;
+    for (; item; p = item, item = item->next);
+
+    if (p == NULL)
+        mgj->noti = noti;
+    else 
+        p->next = noti;
+    pthread_mutex_unlock(&mgj->noti_lock);
+    return;
 }
