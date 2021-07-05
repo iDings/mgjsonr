@@ -58,11 +58,11 @@ static void method_rpc_list(struct jsonrpc_request *r) {
 }
 
 MG_JSONRPC_METHOD_DEF(rpc_list, "rpc.list");
-static struct jsonrpc_method *methods[] = {
+struct jsonrpc_method *rpc_methods[] = {
     &rpc_list,
     NULL
 };
-MG_JSONRPC_METHODS_INIT(rpc, methods);
+MG_JSONRPC_METHODS_INIT(rpc, rpc_methods);
 
 struct jsonrpc_method *mg_jsonrpc_methods(void) {
     return g_mgj_methods;
@@ -73,4 +73,20 @@ void mg_jsonrpc_methods_register(struct jsonrpc_method *methods[]) {
         methods[i]->next = g_mgj_methods;
         g_mgj_methods = methods[i];
     }
+}
+
+extern struct jsonrpc_method *hello_methods[];
+static struct jsonrpc_method **gs_methods_tbl[] = {
+    rpc_methods,
+    hello_methods,
+    NULL,
+};
+
+void mg_jsonrpc_methods_init(void) {
+    LOGI("init mothods manually\n");
+    for (size_t i = 0; gs_methods_tbl[i]; i++) {
+        mg_jsonrpc_methods_register(gs_methods_tbl[i]);
+    }
+
+    return;
 }

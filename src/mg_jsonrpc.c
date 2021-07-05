@@ -98,7 +98,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data, void *fn_data) {
             mg_ws_upgrade(c, hm, NULL);
         }  else if (mg_http_match_uri(hm, "/http/jsonrpc")) {
             // Serve REST response
-            LOGI("body:%.*s\n", hm->body.len, hm->body.ptr);
+            LOGI("body:%.*s\n", (int)hm->body.len, hm->body.ptr);
             char *reply = NULL;
             jsonrpc_ctx_process(&mgj->jctx, hm->body.ptr, hm->body.len, mjson_print_dynamic_buf, &reply, mgj);
             if (!reply) {

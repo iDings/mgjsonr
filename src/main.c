@@ -32,6 +32,9 @@ int main(int argc, char **argv) {
     mg_jsonrpc_t *mgj = mg_jsonrpc_new(url);
     assert(mgj != NULL);
 
+#ifndef MG_JSONRPC_METHOD_CONSTRUCTOR
+    mg_jsonrpc_methods_init();
+#endif
     mg_jsonrpc_init(mgj, mg_jsonrpc_methods());
     mg_jsonrpc_start(mgj, true);
 

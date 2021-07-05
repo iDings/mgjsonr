@@ -11,8 +11,8 @@ static void method_hello(struct jsonrpc_request *req) {
 
 MG_JSONRPC_METHOD_DEF(hello, "hello");
 
-static struct jsonrpc_method *methods[] = {
+struct jsonrpc_method *hello_methods[] = {
     &hello,
     NULL
 };
-MG_JSONRPC_METHODS_INIT(hello, methods);
+MG_JSONRPC_METHODS_INIT(hello, hello_methods);
